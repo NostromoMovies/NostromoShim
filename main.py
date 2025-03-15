@@ -8,7 +8,7 @@ import requests
 video_id = 1
 stream_url = f"http://localhost:8112/api/media/stream/{video_id}"
 
-response = requests.get(stream_url)
+response = requests.get(stream_url, stream=True)
 if response.status_code != 200:
     print(f"Error: HTTP {response.status_code}")
     exit(1)
