@@ -11,6 +11,7 @@ import time
 from video_player import VideoPlayer
 from media_api_client import MediaAPIClient
 import requests
+import concurrent
 
 # Configuration
 username = 'Stolan'
@@ -145,16 +146,54 @@ class TrayApplication:
     def on_play(self, icon, item):
         # Play default video
         asyncio.run_coroutine_threadsafe(self.async_play_video(), self.loop)
+    
+    async def cleanup(self):
+        """Clean up resources before exiting"""
+        print("Cleaning up resources...")
+        
+        # Cancel IPC server task - proper way to handle concurrent.futures.Future
+        if hasattr(self, 'ipc_task') and self.ipc_task:
+            self.ipc_task.cancel()
+        
+        # Close IPC server socket
+        if self.ipc_server:
+            self.ipc_server.close()
+        
+        # Close client session if it exists
+        if self.client and hasattr(self.client, 'close'):
+            await self.client.close()
+        
+        # Stop the video player
+        if self.player:
+            self.player.stop()
+        
+        print("Cleanup complete")
 
     def on_exit(self, icon, item):
         print("Exiting...")
         self.running = False
-        if self.player:
-            self.player.stop()
-        if self.ipc_server:
-            self.ipc_server.close()
-        self.icon.stop()
-        self.loop.call_soon_threadsafe(self.loop.stop)
+        
+        # Schedule cleanup in the event loop and wait for it to complete
+        if self.loop and self.loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self.cleanup(), self.loop)
+            try:
+                # Wait with timeout to avoid hanging
+                future.result(timeout=2)
+            except concurrent.futures.TimeoutError:
+                print("Cleanup timed out")
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+        
+        # Stop the icon
+        if self.icon:
+            self.icon.stop()
+        
+        # Give time for threads to finish
+        time.sleep(0.5)
+        
+        # Stop the event loop
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
 
     def setup_tray(self):
         menu = pystray.Menu(
@@ -213,10 +252,9 @@ class TrayApplication:
 
         # Initialize client in the async loop
         asyncio.run_coroutine_threadsafe(self.async_login(), self.loop)
-        
-        # Start the IPC server in the async loop
-        asyncio.run_coroutine_threadsafe(self.start_ipc_server(), self.loop)
 
+        self.ipc_task = asyncio.run_coroutine_threadsafe(self.start_ipc_server(), self.loop)        
+        
         # Start the tray icon in its own thread
         threading.Thread(target=self.icon.run, daemon=True).start()
 
