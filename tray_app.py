@@ -32,6 +32,20 @@ class TrayApplication:
         self.initial_url = None
         self.parse_command_line()
 
+    async def handle_client(self, reader, writer):
+        """Handle incoming IPC connections"""
+        try:
+            data = await reader.read(1024)
+            if data:
+                url = data.decode('utf-8')
+                print(f"Received URL via IPC: {url}")
+                asyncio.create_task(self.async_play_video(url))
+        except Exception as e:
+            print(f"IPC client error: {e}")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     def parse_command_line(self):
         # Check if app was launched with a custom URL
         for arg in sys.argv[1:]:
@@ -73,34 +87,20 @@ class TrayApplication:
             return False
 
     async def start_ipc_server(self):
-        """Start a server to listen for commands from other instances"""
-        self.ipc_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.ipc_server.bind(('localhost', IPC_PORT))
-        self.ipc_server.listen(5)
-        self.ipc_server.setblocking(False)
-        
-        print(f"IPC server listening on port {IPC_PORT}")
-        
-        while self.running:
-            try:
-                # Use asyncio to handle non-blocking socket operations
-                client, addr = await self.loop.sock_accept(self.ipc_server)
-                print(f"IPC connection from {addr}")
-                
-                # Receive the URL
-                data = await self.loop.sock_recv(client, 1024)
-                if data:
-                    url = data.decode('utf-8')
-                    print(f"Received URL via IPC: {url}")
-                    
-                    # Schedule video playback
-                    asyncio.create_task(self.async_play_video(url))
-                
-                client.close()
-            except Exception as e:
-                if self.running:  # Only print errors if we're still supposed to be running
-                    print(f"IPC server error: {e}")
-                await asyncio.sleep(0.1)  # Small delay to prevent CPU hogging
+        """Start the IPC server using asyncio's high-level API"""
+        try:
+            self.ipc_server = await asyncio.start_server(
+                self.handle_client,
+                'localhost',
+                IPC_PORT
+            )
+            print(f"IPC server listening on port {IPC_PORT}")
+            async with self.ipc_server:
+                await self.ipc_server.serve_forever()
+        except asyncio.CancelledError:
+            print("IPC server task cancelled")
+        except Exception as e:
+            print(f"IPC server error: {e}")
 
     def create_icon(self):
         # Create a simple programmatic icon
@@ -155,9 +155,11 @@ class TrayApplication:
         if hasattr(self, 'ipc_task') and self.ipc_task:
             self.ipc_task.cancel()
         
-        # Close IPC server socket
+        # Close IPC server properly
         if self.ipc_server:
             self.ipc_server.close()
+            await self.ipc_server.wait_closed()
+            print("IPC server closed")
         
         # Close client session if it exists
         if self.client and hasattr(self.client, 'close'):
