@@ -4,20 +4,20 @@ import threading
 import asyncio
 import sys
 import os
+import time
 import winreg
 import re
 import socket
-import time
+import aiohttp
 from video_player import VideoPlayer
 from media_api_client import MediaAPIClient
-import requests
-import concurrent
 
 # Configuration
-username = 'Stolan'
-password = '123'
-DEFAULT_URL = "http://localhost:8112/api/media/stream/1"  # Default stream URL
-IPC_PORT = 45678  # Port for inter-process communication
+USERNAME = 'Stolan'
+PASSWORD = '123'
+DEFAULT_URL = "http://localhost:8112/api/media/stream/1"
+IPC_PORT = 45678
+PROTOCOL_HANDLER = 'mediaapp'
 
 class TrayApplication:
     def __init__(self):
@@ -27,248 +27,170 @@ class TrayApplication:
         self.loop = asyncio.new_event_loop()
         self.running = True
         self.ipc_server = None
-        
-        # Parse command line arguments for URL protocol handling
-        self.initial_url = None
-        self.parse_command_line()
+        self.initial_url = self._parse_command_line()
+        self.session = None  # aiohttp session
 
-    async def handle_client(self, reader, writer):
-        """Handle incoming IPC connections"""
+    async def _async_init(self):
+        """Initialize async resources"""
+        self.session = aiohttp.ClientSession()
+        self.client = MediaAPIClient(session=self.session)
+        await self.client.initialize()
+        
+        if not await self._ensure_logged_in():
+            sys.exit("Failed to login")
+
+    async def _ensure_logged_in(self):
+        if not self.client.token:
+            return await self.client.login(USERNAME, PASSWORD)
+        return True
+
+    def _parse_command_line(self):
+        for arg in sys.argv[1:]:
+            if arg.startswith(f'{PROTOCOL_HANDLER}://'):
+                match = re.search(rf'{PROTOCOL_HANDLER}://play/(\d+)', arg)
+                return f"http://localhost:8112/api/media/stream/{match.group(1)}" if match else None
+
+    def _is_already_running(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(('localhost', IPC_PORT))
+                return False
+            except OSError:
+                return True
+
+    def _send_to_existing_instance(self, url):
+        try:
+            with socket.create_connection(('localhost', IPC_PORT), timeout=1) as sock:
+                sock.sendall(url.encode())
+                return True
+        except (socket.error, TimeoutError):
+            return False
+
+    async def _handle_ipc_client(self, reader, writer):
         try:
             data = await reader.read(1024)
             if data:
-                url = data.decode('utf-8')
-                print(f"Received URL via IPC: {url}")
-                asyncio.create_task(self.async_play_video(url))
-        except Exception as e:
-            print(f"IPC client error: {e}")
+                await self.async_play_video(data.decode())
         finally:
             writer.close()
-            await writer.wait_closed()
 
-    def parse_command_line(self):
-        # Check if app was launched with a custom URL
-        for arg in sys.argv[1:]:
-            if arg.startswith('mediaapp://'):
-                # Extract video_id from mediaapp://play/123 format
-                match = re.search(r'mediaapp://play/(\d+)', arg)
-                if match:
-                    video_id = match.group(1)
-                    self.initial_url = f"http://localhost:8112/api/media/stream/{video_id}"
-                    print(f"Found initial URL: {self.initial_url}")
-
-    def is_already_running(self):
-        """Check if another instance is already running by trying to bind to the IPC port"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.bind(('localhost', IPC_PORT))
-            # If we get here, no other instance is running
-            return False
-        except socket.error:
-            # Port is in use, another instance is running
-            return True
-        finally:
-            sock.close()
-
-    def send_url_to_running_instance(self, url):
-        """Send the URL to an already running instance"""
-        try:
-            # Connect to the running instance
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(('localhost', IPC_PORT))
-            
-            # Send the URL
-            sock.sendall(url.encode('utf-8'))
-            sock.close()
-            print(f"Sent URL to running instance: {url}")
-            return True
-        except Exception as e:
-            print(f"Failed to send URL to running instance: {e}")
-            return False
-
-    async def start_ipc_server(self):
-        """Start the IPC server using asyncio's high-level API"""
+    async def _start_ipc_server(self):
         try:
             self.ipc_server = await asyncio.start_server(
-                self.handle_client,
-                'localhost',
-                IPC_PORT
+                self._handle_ipc_client, 'localhost', IPC_PORT
             )
-            print(f"IPC server listening on port {IPC_PORT}")
             async with self.ipc_server:
                 await self.ipc_server.serve_forever()
         except asyncio.CancelledError:
-            print("IPC server task cancelled")
-        except Exception as e:
-            print(f"IPC server error: {e}")
+            print("IPC server stopped")
 
-    def create_icon(self):
-        # Create a simple programmatic icon
+    def _create_tray_icon(self):
         image = Image.new('RGB', (64, 64), 'white')
-        dc = ImageDraw.Draw(image)
-        dc.rectangle((16, 16, 48, 48), fill='blue')
+        ImageDraw.Draw(image).rectangle((16, 16, 48, 48), fill='blue')
         return image
 
-    async def async_login(self):
-        self.client = MediaAPIClient()
-        await self.client.initialize()
-        
-        if not self.client.token:
-            if await self.client.login(username, password):
-                print("Login successful!")
-            else:
-                print("Login failed")
-                return False
-        return True
-
     async def async_play_video(self, url=None):
-        try:
-            # Use provided URL or default
-            stream_url = url or DEFAULT_URL
-            
-            # Check stream availability
-            response = requests.get(stream_url, stream=True)
-            if response.status_code != 200:
-                print(f"Error: HTTP {response.status_code}")
+        stream_url = url or DEFAULT_URL
+        
+        async with self.session.get(stream_url) as response:
+            if response.status != 200:
+                print(f"Stream unavailable: HTTP {response.status}")
                 return
 
-            # Stop any existing player
             if self.player:
                 self.player.stop()
-            
-            # Initialize new player
+                
             self.player = VideoPlayer()
             self.player.play_video(stream_url)
-            
-        except Exception as e:
-            print(f"Playback error: {e}")
 
-    def on_play(self, icon, item):
-        # Play default video
+    def _on_play(self, icon, item):
         asyncio.run_coroutine_threadsafe(self.async_play_video(), self.loop)
-    
-    async def cleanup(self):
-        """Clean up resources before exiting"""
+
+    async def _cleanup(self):
         print("Cleaning up resources...")
         
-        # Cancel IPC server task - proper way to handle concurrent.futures.Future
-        if hasattr(self, 'ipc_task') and self.ipc_task:
-            self.ipc_task.cancel()
-        
-        # Close IPC server properly
         if self.ipc_server:
             self.ipc_server.close()
             await self.ipc_server.wait_closed()
-            print("IPC server closed")
-        
-        # Close client session if it exists
-        if self.client and hasattr(self.client, 'close'):
-            await self.client.close()
-        
-        # Stop the video player
+
         if self.player:
             self.player.stop()
-        
-        print("Cleanup complete")
 
-    def on_exit(self, icon, item):
-        print("Exiting...")
+        if self.session:
+            await self.session.close()
+
+        if self.client:
+            await self.client.close()
+
+    def _on_exit(self, icon, item):
         self.running = False
-        
-        # Schedule cleanup in the event loop and wait for it to complete
-        if self.loop and self.loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(self.cleanup(), self.loop)
-            try:
-                # Wait with timeout to avoid hanging
-                future.result(timeout=2)
-            except concurrent.futures.TimeoutError:
-                print("Cleanup timed out")
-            except Exception as e:
-                print(f"Cleanup error: {e}")
-        
-        # Stop the icon
+        asyncio.run_coroutine_threadsafe(self._shutdown(), self.loop)
+
+    async def _shutdown(self):
+        await self._cleanup()
+        self.loop.stop()
         if self.icon:
             self.icon.stop()
-        
-        # Give time for threads to finish
-        time.sleep(0.5)
-        
-        # Stop the event loop
-        if self.loop and self.loop.is_running():
-            self.loop.call_soon_threadsafe(self.loop.stop)
 
-    def setup_tray(self):
+    def _setup_tray(self):
         menu = pystray.Menu(
-            pystray.MenuItem('Play Default Video', self.on_play),
-            pystray.MenuItem('Exit', self.on_exit)
+            pystray.MenuItem('Play Default', self._on_play),
+            pystray.MenuItem('Exit', self._on_exit)
         )
-
         self.icon = pystray.Icon(
-            "media_tray_app",
-            icon=self.create_icon(),
+            "media_tray",
+            icon=self._create_tray_icon(),
             menu=menu
         )
 
-    def register_protocol_handler(self):
-        """Register the custom URL protocol handler in Windows Registry"""
+    def _register_protocol_handler(self):
         try:
-            # Get the path to the current executable
-            app_path = os.path.abspath(sys.argv[0])
-            if app_path.endswith('.py'):
-                # If running from Python script, use pythonw to avoid console window
-                cmd = f'"{sys.executable}" "{app_path}" "%1"'
-            else:
-                # If running from executable
-                cmd = f'"{app_path}" "%1"'
-                
-            # Create registry entries
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\mediaapp") as key:
-                winreg.SetValue(key, "", winreg.REG_SZ, "URL:Media App Protocol")
+            exe_path = os.path.abspath(sys.argv[0])
+            cmd = f'"{sys.executable}" "{exe_path}" "%1"' if exe_path.endswith('.py') else f'"{exe_path}" "%1"'
+            
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{PROTOCOL_HANDLER}") as key:
+                winreg.SetValue(key, "", winreg.REG_SZ, f"URL:{PROTOCOL_HANDLER} Protocol")
                 winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
                 
                 with winreg.CreateKey(key, r"shell\open\command") as cmd_key:
                     winreg.SetValue(cmd_key, "", winreg.REG_SZ, cmd)
-                    
-            print("Protocol handler registered successfully")
-            return True
         except Exception as e:
-            print(f"Failed to register protocol handler: {e}")
-            return False
+            print(f"Protocol registration failed: {e}")
 
     def run(self):
-        # Check if another instance is already running
-        if self.initial_url and self.is_already_running():
-            print("Another instance is already running. Sending URL and exiting.")
-            self.send_url_to_running_instance(self.initial_url)
-            return
+        if self.initial_url and self._is_already_running():
+            if self._send_to_existing_instance(self.initial_url):
+                return
 
-        # Register protocol handler (only needs to be done once)
-        self.register_protocol_handler()
-        
-        # Start the asyncio event loop in a separate thread
-        def start_loop(loop):
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
+        self._register_protocol_handler()
 
-        threading.Thread(target=start_loop, args=(self.loop,), daemon=True).start()
+        # Start async loop
+        threading.Thread(
+            target=self.loop.run_forever,
+            daemon=True
+        ).start()
 
-        # Initialize client in the async loop
-        asyncio.run_coroutine_threadsafe(self.async_login(), self.loop)
+        # Initialize async components
+        asyncio.run_coroutine_threadsafe(self._async_init(), self.loop)
+        asyncio.run_coroutine_threadsafe(self._start_ipc_server(), self.loop)
 
-        self.ipc_task = asyncio.run_coroutine_threadsafe(self.start_ipc_server(), self.loop)        
-        
-        # Start the tray icon in its own thread
+        # Start tray
+        self._setup_tray()
         threading.Thread(target=self.icon.run, daemon=True).start()
 
-        # If launched with a URL, play it
+        # Play initial URL if provided
         if self.initial_url:
-            asyncio.run_coroutine_threadsafe(self.async_play_video(self.initial_url), self.loop)
+            asyncio.run_coroutine_threadsafe(
+                self.async_play_video(self.initial_url), 
+                self.loop
+            )
 
-        # Keep main thread alive
-        while self.running:
-            time.sleep(0.1)  # Reduce CPU usage
+        # Keep main thread responsive
+        try:
+            while self.running:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            self._on_exit(None, None)
 
 if __name__ == "__main__":
-    app = TrayApplication()
-    app.setup_tray()
-    app.run()
+    TrayApplication().run()
