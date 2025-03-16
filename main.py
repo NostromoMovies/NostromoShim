@@ -1,27 +1,42 @@
-import mpv
+from video_player import VideoPlayer
+from media_api_client import  MediaAPIClient
 import requests
-
-# player = mpv.MPV(ytdl=True)
-# player.play('https://youtu.be/DOmdB7D-pUU')
-# player.wait_for_playback()
+import asyncio
 
 video_id = 1
 stream_url = f"http://localhost:8112/api/media/stream/{video_id}"
 
-response = requests.get(stream_url, stream=True)
-if response.status_code != 200:
-    print(f"Error: HTTP {response.status_code}")
-    exit(1)
+
+async def main():
+    client = MediaAPIClient()
+    await client.initialize()
+
+    print(f"Initial token: {client.token}")
+
+    if client.token is None:
+
+        username = 'Stolan'
+        password = '123'
+        if await client.login(username, password):
+            print("Login successful!")
+            print(f"Token: {client.token}")
+        else:
+            print("Login failed")
 
 
-player = mpv.MPV(
-    input_default_bindings=True,
-    input_vo_keyboard=True,
-    osc=True
-)
+    response = requests.get(stream_url, stream=True)
+    if response.status_code != 200:
+        print(f"Error: HTTP {response.status_code}")
+        exit(1)
 
-try:
-    player.play(stream_url)
-    player.wait_for_playback()
-except Exception as e:
-    print(f"Playback error: {e}")
+
+    player = VideoPlayer()
+
+    try:
+        player.play_video(stream_url)
+    except Exception as e:
+        print(f"Playback error: {e}")
+
+
+asyncio.run( main() )
+
