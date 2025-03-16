@@ -17,7 +17,7 @@ USERNAME = 'Stolan'
 PASSWORD = '123'
 DEFAULT_URL = "http://localhost:8112/api/media/stream/1"
 IPC_PORT = 45678
-PROTOCOL_HANDLER = 'mediaapp'
+PROTOCOL_HANDLER = 'nostromoshim'
 
 class TrayApplication:
     def __init__(self):
@@ -27,7 +27,7 @@ class TrayApplication:
         self.loop = asyncio.new_event_loop()
         self.running = True
         self.ipc_server = None
-        self.initial_url = self._parse_command_line()
+        self.initial_url: str = self._parse_command_line()
         self.session = None  # aiohttp session
 
     async def _async_init(self):
