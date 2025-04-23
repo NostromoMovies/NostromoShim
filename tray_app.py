@@ -11,6 +11,7 @@ import socket
 import aiohttp
 from video_player import VideoPlayer
 from media_api_client import MediaAPIClient
+import traceback
 
 # Configuration
 USERNAME = 'Stolan'
@@ -192,5 +193,26 @@ class TrayApplication:
         except KeyboardInterrupt:
             self._on_exit(None, None)
 
+# ADD THIS IMPORT AT THE TOP of your file if it's not already there
+
 if __name__ == "__main__":
-    TrayApplication().run()
+    # Determine if this is likely the second instance (has a protocol argument)
+    is_second_instance = any(arg.startswith(f'{PROTOCOL_HANDLER}://') for arg in sys.argv[1:])
+
+    try:
+        print(f"--- Starting Instance (is_second={is_second_instance}) ---") # Added print
+        print(f"Arguments: {sys.argv}") # Added print
+        TrayApplication().run()
+        print("--- Instance finished run() ---") # Added print
+
+    except Exception as e:
+        print(f"--- Instance CRASHED ---") # Added print
+        print(f"ERROR: {e}")
+        traceback.print_exc() # Print the full stack trace
+
+    finally:
+        # Keep the window open for debugging, especially if it's the second instance
+        # or if an error occurred.
+        print("\n--- Script execution finished or crashed ---")
+        print("Press Enter to close this window...")
+        input()

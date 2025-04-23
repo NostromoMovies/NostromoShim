@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Protocol Handler Test</title>
+</head>
+<body>
+    <h2>Protocol Handler Test</h2>
+    <p>Video ID: <input type="number" id="videoId" value="1"></p>
+    <p><button onclick="testProtocol()">Test Protocol Handler</button></p>
+    
+    <div id="results"></div>
+    
+    <script>
+        function testProtocol() {
+            const videoId = document.getElementById('videoId').value;
+            const url = `nostromoshim://play/${videoId}`;
+            
+            document.getElementById('results').innerHTML += 
+                `<p>Testing: <a href="${url}" target="_blank">${url}</a></p>`;
+            
+            // Also try programmatic opening
+            try {
+                window.open(url, '_blank');
+            } catch (e) {
+                document.getElementById('results').innerHTML += 
+                    `<p>Error: ${e.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

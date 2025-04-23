@@ -1,5 +1,9 @@
-import mpv
 import threading
+import os
+import sys
+script_dir = os.path.dirname(__file__)
+os.environ["PATH"] = script_dir + os.pathsep + os.environ["PATH"]
+import mpv
 
 class VideoPlayer:
     def __init__(self):
