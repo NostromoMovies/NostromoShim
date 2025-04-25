@@ -138,3 +138,20 @@ class MediaAPIClient:
             print(f"No credentials to delete: {e}")
         except Exception as e:
             print(f"Error clearing credentials: {e}")
+            
+    async def report_playback_time(self, media_id: int, seconds: float) -> bool:
+        """Report playback time to server for a specific media item"""
+        if not self.token:
+            raise ValueError("Not authenticated")
+
+        try:
+            async with self.session.post(
+                f"{self.base_url}/api/media/playback",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"mediaId": media_id, "position": seconds}
+            ) as response:
+                response.raise_for_status()
+                return True
+        except aiohttp.ClientError as e:
+            print(f"Failed to report playback time: {e}")
+            return False

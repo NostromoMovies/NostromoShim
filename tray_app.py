@@ -30,6 +30,8 @@ class TrayApplication:
         self.ipc_server = None
         self.initial_url: str = self._parse_command_line()
         self.session = None  # aiohttp session
+        self.report_interval = 10  # Report every 10 seconds
+        self.last_report_time = {}  # Track last report for each media_id
 
     async def _async_init(self):
         """Initialize async resources"""
@@ -193,7 +195,46 @@ class TrayApplication:
         except KeyboardInterrupt:
             self._on_exit(None, None)
 
-# ADD THIS IMPORT AT THE TOP of your file if it's not already there
+    async def _report_playback_position(self, media_id, position):
+        """Report playback position to server if interval elapsed"""
+        now = time.time()
+        last_report = self.last_report_time.get(media_id, 0)
+        
+        # Report if enough time has passed since last report
+        if now - last_report >= self.report_interval:
+            success = await self.client.report_playback_time(media_id, position)
+            if success:
+                self.last_report_time[media_id] = now
+                print(f"Reported position {position:.2f}s for media {media_id}")
+    
+    async def async_play_video(self, url=None):
+        stream_url = url or DEFAULT_URL
+        
+        # Extract media_id from URL
+        media_id = None
+        match = re.search(r'/stream/(\d+)', stream_url)
+        if match:
+            media_id = int(match.group(1))
+        
+        async with self.session.get(stream_url) as response:
+            if response.status != 200:
+                print(f"Stream unavailable: HTTP {response.status}")
+                return
+
+            if self.player:
+                self.player.stop()
+                
+            self.player = VideoPlayer()
+            
+            # Set up the callback function to report playback time
+            def position_callback(mid, position):
+                asyncio.run_coroutine_threadsafe(
+                    self._report_playback_position(mid, position),
+                    self.loop
+                )
+            
+            self.player.set_position_callback(position_callback)
+            self.player.play_video(stream_url, media_id)
 
 if __name__ == "__main__":
     # Determine if this is likely the second instance (has a protocol argument)
