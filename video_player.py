@@ -17,6 +17,10 @@ class VideoPlayer:
         self.media_id = None
         self.last_position = 0
         self.position_callback = None
+
+        self.player['force-window'] = 'yes'
+        self.player['ontop'] = 'yes'         
+        self.player['window-minimized'] = 'no'
         
         # Set up a property observer to track playback position
         self.player.observe_property("time-pos", self._on_time_change)
