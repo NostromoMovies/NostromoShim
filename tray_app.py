@@ -12,6 +12,7 @@ import aiohttp
 from video_player import VideoPlayer
 from media_api_client import MediaAPIClient
 import traceback
+import ctypes
 
 # Configuration
 USERNAME = 'Stolan'
@@ -19,6 +20,9 @@ PASSWORD = '123'
 DEFAULT_URL = "http://localhost:8112/api/media/stream/1"
 IPC_PORT = 45678
 PROTOCOL_HANDLER = 'nostromoshim'
+
+SW_RESTORE = 9
+SW_SHOW = 5
 
 class TrayApplication:
     def __init__(self):
@@ -148,17 +152,52 @@ class TrayApplication:
 
     def _register_protocol_handler(self):
         try:
-            exe_path = os.path.abspath(sys.argv[0])
-            cmd = f'"{sys.executable}" "{exe_path}" "%1"' if exe_path.endswith('.py') else f'"{exe_path}" "%1"'
-            
+            exe_path = os.path.abspath(sys.argv[0]) # The script or packaged exe path
+
+            # --- MODIFICATION START ---
+
+            # Determine the path for pythonw.exe based on sys.executable
+            python_dir = os.path.dirname(sys.executable)
+            pythonw_path = os.path.join(python_dir, 'pythonw.exe')
+
+            # Check if pythonw.exe exists; fall back to sys.executable if not
+            # (This is defensive, it should normally exist alongside python.exe)
+            if not os.path.exists(pythonw_path):
+                print(f"Warning: pythonw.exe not found at {pythonw_path}, using {sys.executable}")
+                effective_python_executable = sys.executable
+            else:
+                effective_python_executable = pythonw_path
+
+            # Build the command string
+            if exe_path.endswith('.py'):
+                # If running as a script, use the pythonw.exe (or fallback) path
+                cmd = f'"{effective_python_executable}" "{exe_path}" "%1"'
+            else:
+                # If running as a packaged .exe, assume it's built correctly
+                # (e.g., as a windowed app) and just use its path.
+                cmd = f'"{exe_path}" "%1"'
+
+            # --- MODIFICATION END ---
+
+            # Optional: Print the command being registered for debugging
+            print(f"Attempting to register command: {cmd}")
+
+            # Proceed with registry writing as before
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{PROTOCOL_HANDLER}") as key:
                 winreg.SetValue(key, "", winreg.REG_SZ, f"URL:{PROTOCOL_HANDLER} Protocol")
                 winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
-                
+
                 with winreg.CreateKey(key, r"shell\open\command") as cmd_key:
+                    # Write the correctly determined command string
                     winreg.SetValue(cmd_key, "", winreg.REG_SZ, cmd)
+
+            print("Protocol registration check/update successful.") # Optional success message
+
         except Exception as e:
+            # Print more details on failure
+            import traceback
             print(f"Protocol registration failed: {e}")
+            # traceback.print_exc() # Uncomment for full stack trace during debuggin
 
     def run(self):
         if self.initial_url and self._is_already_running():
